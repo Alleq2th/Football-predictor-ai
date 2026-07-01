@@ -2,8 +2,8 @@
 import requests, time, numpy as np
 from datetime import datetime
 
-FOOTBALL_DATA_TOKEN = "10c9430698288310ee1c87a5960299b7"
-ODDS_API_KEY = "9e425175cd824c9d8eab7ae3a232250f"
+FOOTBALL_DATA_TOKEN = "9e425175cd824c9d8eab7ae3a232250f"   # Football-Data.org
+ODDS_API_KEY = "10c9430698288310ee1c87a5960299b7"           # The Odds API
 
 class Predictor:
     def __init__(self):
@@ -71,7 +71,7 @@ class Predictor:
         return form
 
     def stakes(self, standings, hid, aid):
-        if not standings: return 25  # default low but passable
+        if not standings: return 25
         try:
             table = standings.get("standings", [{}])[0].get("table", [])
             hp = ap = None
@@ -80,7 +80,7 @@ class Predictor:
                 if t["team"]["id"] == hid: hp = t["position"]
                 if t["team"]["id"] == aid: ap = t["position"]
             if not hp or not ap: return 25
-            s = 25  # base
+            s = 25
             if hp <= 3: s += 35
             if ap <= 3: s += 30
             if 4 <= hp <= 6: s += 20
@@ -117,15 +117,12 @@ class Predictor:
                 hname = home["name"]; aname = away["name"]
                 comp = m["competition"]["code"]
 
-                # Stakes – lowered threshold
                 st = self.stakes(self.get_standings(comp), hid, aid)
-                if st < 25: continue   # was 40, now 25
+                if st < 25: continue
 
-                # Odds – relaxed
                 odd = self.lowest_odd(odds, hname)
-                if not odd or odd > 1.5: continue   # was 1.35
+                if not odd or odd > 1.5: continue
 
-                # Team stats
                 hm = self.get_team_matches(hid, 20)
                 aw = self.get_team_matches(aid, 20)
                 hh = self.calc_avg_goals(hm, hid, True)
@@ -133,7 +130,6 @@ class Predictor:
                 hform = self.form_list(hm, hid)
                 aform = self.form_list(aw, aid)
 
-                # Form scores (weighted recent)
                 def form_score(lst):
                     if not lst: return 0.5
                     w = [1.0, 0.9, 0.8, 0.7, 0.6]
@@ -143,7 +139,6 @@ class Predictor:
                 home_form_val = form_score(hform[:5])
                 away_form_val = form_score(aform[:5])
 
-                # Simple confidence factors (just the most important)
                 factors = {
                     "home_scoring": min(1, hh["scored"] / 3),
                     "home_defense": min(1, (3 - hh["conceded"]) / 3),
@@ -176,4 +171,4 @@ class Predictor:
                 continue
 
         results.sort(key=lambda x: x["confidence"], reverse=True)
-        return [r for r in results if r["confidence"] > 55][:5]   # only top 5 with confidence > 55%
+        return [r for r in results if r["confidence"] > 55][:5]
