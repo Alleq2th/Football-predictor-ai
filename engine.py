@@ -1,7 +1,6 @@
 # engine.py
 import requests, time, numpy as np
 from datetime import datetime
-import json
 
 FOOTBALL_DATA_TOKEN = "10c9430698288310ee1c87a5960299b7"
 ODDS_API_KEY = "9e425175cd824c9d8eab7ae3a232250f"
@@ -71,14 +70,8 @@ class Predictor:
                 form.append("W" if ag > hg else ("D" if ag == hg else "L"))
         return form
 
-    def h2h(self, t1, t2):
-        m1 = self.get_team_matches(t1, 50)
-        m2 = self.get_team_matches(t2, 50)
-        ids = {m["id"] for m in m1}
-        return [m for m in m2 if m["id"] in ids][:5]
-
     def stakes(self, standings, hid, aid):
-        if not standings: return 30
+        if not standings: return 25  # default low but passable
         try:
             table = standings.get("standings", [{}])[0].get("table", [])
             hp = ap = None
@@ -86,19 +79,17 @@ class Predictor:
             for t in table:
                 if t["team"]["id"] == hid: hp = t["position"]
                 if t["team"]["id"] == aid: ap = t["position"]
-            if not hp or not ap: return 30
-            s = 0
-            if hp <= 3: s += 40
+            if not hp or not ap: return 25
+            s = 25  # base
+            if hp <= 3: s += 35
             if ap <= 3: s += 30
-            if 4 <= hp <= 6: s += 25
-            if 4 <= ap <= 6: s += 20
-            if hp >= size - 3: s += 35
-            if ap >= size - 3: s += 30
-            if 8 <= hp <= size - 8: s -= 20
-            if 8 <= ap <= size - 8: s -= 10
-            return max(10, min(100, s))
+            if 4 <= hp <= 6: s += 20
+            if 4 <= ap <= 6: s += 15
+            if hp >= size - 3: s += 30
+            if ap >= size - 3: s += 25
+            return max(25, min(100, s))
         except:
-            return 30
+            return 25
 
     def lowest_odd(self, odds_data, home_name):
         best = None
@@ -126,13 +117,13 @@ class Predictor:
                 hname = home["name"]; aname = away["name"]
                 comp = m["competition"]["code"]
 
-                # Stakes
+                # Stakes – lowered threshold
                 st = self.stakes(self.get_standings(comp), hid, aid)
-                if st < 40: continue
+                if st < 25: continue   # was 40, now 25
 
-                # Odds
+                # Odds – relaxed
                 odd = self.lowest_odd(odds, hname)
-                if not odd or odd > 1.35: continue
+                if not odd or odd > 1.5: continue   # was 1.35
 
                 # Team stats
                 hm = self.get_team_matches(hid, 20)
@@ -141,60 +132,36 @@ class Predictor:
                 aa = self.calc_avg_goals(aw, aid, False)
                 hform = self.form_list(hm, hid)
                 aform = self.form_list(aw, aid)
-                h2h_matches = self.h2h(hid, aid)
 
-                # H2H score
-                if h2h_matches:
-                    w = d = 0
-                    for h in h2h_matches:
-                        sg = h.get("score", {}).get("fullTime", {})
-                        hg = sg.get("home") or 0; ag = sg.get("away") or 0
-                        if h["homeTeam"]["id"] == hid:
-                            if hg > ag: w += 1
-                            elif hg == ag: d += 1
-                        else:
-                            if ag > hg: w += 1
-                            elif ag == hg: d += 1
-                    h2h_score = (w + 0.4*d)/len(h2h_matches)
-                else:
-                    h2h_score = 0.5
+                # Form scores (weighted recent)
+                def form_score(lst):
+                    if not lst: return 0.5
+                    w = [1.0, 0.9, 0.8, 0.7, 0.6]
+                    s = sum(w[i] if r=="W" else (w[i]*0.5 if r=="D" else 0) for i,r in enumerate(lst))
+                    return s / sum(w[:len(lst)])
 
-                # Rest days
-                def rest(matches):
-                    dates = [x.get("utcDate") for x in matches if x.get("utcDate")]
-                    if not dates: return 7
-                    last = max(dates)
-                    try:
-                        last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
-                        return max(1, (datetime.now(last_dt.tzinfo) - last_dt).days)
-                    except: return 7
-                hrest = rest(hm); arest = rest(aw)
-                rest_adv = min(1.0, (hrest - arest)/5 + 0.5)
+                home_form_val = form_score(hform[:5])
+                away_form_val = form_score(aform[:5])
 
-                # Confidence factors
+                # Simple confidence factors (just the most important)
                 factors = {
-                    "home_scoring": min(1, hh["scored"]/3),
-                    "home_defense": min(1, (3 - hh["conceded"])/3),
-                    "away_scoring": min(1, (3 - aa["scored"])/3),
-                    "away_defense": min(1, aa["conceded"]/3),
-                    "home_record": hform.count("W")/max(len(hform),1),
-                    "away_record": aform.count("L")/max(len(aform),1),
-                    "form_home": self._form_score(hform[:5]),
-                    "form_away": 1 - self._form_score(aform[:5]),
-                    "h2h": h2h_score,
-                    "stakes": st/100,
-                    "rest": rest_adv,
-                    "odds": 1 - (odd-1)*2,
+                    "home_scoring": min(1, hh["scored"] / 3),
+                    "home_defense": min(1, (3 - hh["conceded"]) / 3),
+                    "away_scoring": min(1, (3 - aa["scored"]) / 3),
+                    "away_defense": min(1, aa["conceded"] / 3),
+                    "form_home": home_form_val,
+                    "form_away": 1 - away_form_val,
+                    "stakes": st / 100,
+                    "odds": 1 - (odd - 1) * 2,
                 }
                 weights = {
-                    "home_scoring":0.08, "home_defense":0.07, "away_scoring":0.07,
-                    "away_defense":0.06, "home_record":0.07, "away_record":0.06,
-                    "form_home":0.09, "form_away":0.08, "h2h":0.07, "stakes":0.06,
-                    "rest":0.05, "odds":0.10
+                    "home_scoring": 0.12, "home_defense": 0.10, "away_scoring": 0.10,
+                    "away_defense": 0.10, "form_home": 0.14, "form_away": 0.12,
+                    "stakes": 0.10, "odds": 0.22
                 }
-                total = sum(factors[k]*weights.get(k,0.03) for k in factors)
-                total_w = sum(weights.get(k,0.03) for k in factors)
-                conf = min(95, max(55, (total/total_w)*100))
+                total = sum(factors[k]*weights.get(k,0.05) for k in factors)
+                total_w = sum(weights.get(k,0.05) for k in factors)
+                conf = min(95, max(50, (total/total_w)*100))
 
                 results.append({
                     "home": hname, "away": aname,
@@ -205,14 +172,8 @@ class Predictor:
                     "prediction": "HOME WIN" if conf > 65 else "DRAW/HOME",
                     "stakes": st
                 })
-            except:
+            except Exception as e:
                 continue
 
         results.sort(key=lambda x: x["confidence"], reverse=True)
-        return [r for r in results if r["confidence"] > 65][:5]
-
-    def _form_score(self, lst):
-        if not lst: return 0.5
-        w = [1.0, 0.9, 0.8, 0.7, 0.6]
-        s = sum(w[i] if r=="W" else (w[i]*0.5 if r=="D" else 0) for i,r in enumerate(lst))
-        return s / sum(w[:len(lst)])
+        return [r for r in results if r["confidence"] > 55][:5]   # only top 5 with confidence > 55%
